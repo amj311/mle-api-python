@@ -1,6 +1,6 @@
 from flask import Flask, request, send_from_directory
 from flask_restful import Api, Resource, reqparse
-
+from flask_cors import CORS
 
 from matplotlib import pyplot as plt
 import io
@@ -297,16 +297,36 @@ class PlanTextExtractor:
         detail_bbox = self.get_detail_graphic_bbox(page_num, detail_num)
         return self.crop_bbox(self.page_nums[page_num], detail_bbox)
 
+
+
+
+
+
+
+
 app = Flask(__name__, static_url_path='/static/')
 api = Api(app)
+cors = CORS(app)
 
-pages = 5
+pdfs = [
+    {"name": 'test_pdf', "pages": 20 }
+]
 
 class ML(Resource):
     def get(self, id=0):
-        return {"msg":"welcome to my Python API!"+str(pages)}, 200
+        return {"msg":"welcome to my Python API!"}, 200
 
-api.add_resource(ML, "/")
+    def get(self, id=1):
+        # In the future this may return data for a specific pdf of many
+        return pdfs[0], 200
+    
+    def post(self, id=2):
+        print(request.json)
+        # TODO: send bbox to Extractor and return response!
+        return "Good"
+
+api.add_resource(ML, "/", "/pdf-data", "/process-tag-bb")
+
 
 if __name__ == '__main__':
     app.run(debug=True)
