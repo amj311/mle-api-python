@@ -84,7 +84,7 @@ class PlanTextExtractor:
         get_detail_graphic_from_tag: Given a detail tag, returns a cropped image of the detail graphic
     '''
     
-    def __init__(self, plan_folder_path, pg_num_bbox, process_all_pages=True, master_dict=None):
+    def __init__(self, plan_folder_path, pg_num_bbox, process_all_pages=True, master_dict=None, cb=None):
         '''Initialize class, process all text in the plan, and get page nums
         
         Args:
@@ -105,41 +105,47 @@ class PlanTextExtractor:
         # Load in all of the pages in the plan
         if process_all_pages:
             cog_key = input('Please enter the Azure API key: ')
-            cog_endpoint = 'https://tag-linking.cognitiveservices.azure.com/'
+            cog_endpoint = 'https://mle-demo-09-2020.cognitiveservices.azure.com/'
 
             # Get a client for the computer vision service
             computervision_client = ComputerVisionClient(cog_endpoint, CognitiveServicesCredentials(cog_key))
 
-            for i, img_name in enumerate(os.listdir(self.plan_folder_path)):
-                if img_name.endswith('.png'):
-                    print('Processing image {} of ~{}'.format(i+1, len(os.listdir(self.plan_folder_path))))
+            images = [n for n in os.listdir(self.plan_folder_path) if n.endswith('.png')]
+            for i, img_name in enumerate(images):
+                print('Processing image {} of {}'.format(i+1, len(images)))
 
-                    # Use the Computer Vision service to find text in the image
-                    @retry(ComputerVisionErrorException)
-                    def run_azure_ocr(plan_folder_path, img_name):
-                        image_path = plan_folder_path + '/' + img_name
-                        image_stream = open(image_path, "rb")
-                        return computervision_client.recognize_printed_text_in_stream(image_stream)
-                    read_results = run_azure_ocr(plan_folder_path, img_name)
-                    
-                    # Store the text bboxes
-                    result_bboxes = {}
-                    for region in read_results.regions:
-                        for line in region.lines:
-                            l,t,w,h = tuple(map(int, line.bounding_box.split(',')))
-                            bbox = (l, t, l+w, t+h)
-                            line_text = ''
-                            for word in line.words:
-                                line_text += word.text + ' '
-                            clean_line = line_text.rstrip()
-                            result_bboxes[bbox] = clean_line
-                    self.results[img_name] = result_bboxes
-                    
-                    self.detail_graphic_bboxes[img_name] = []
+                # Use the Computer Vision service to find text in the image
+                # @retry(ComputerVisionErrorException)
+                def run_azure_ocr(plan_folder_path, img_name):
+                    image_path = plan_folder_path + '/' + img_name
+                    print(image_path)
+                    image_stream = open(image_path, "rb")
+                    return computervision_client.recognize_printed_text_in_stream(image_stream)
+
+                read_results = run_azure_ocr(plan_folder_path, img_name)
+                
+                # Store the text bboxes
+                result_bboxes = {}
+                for region in read_results.regions:
+                    for line in region.lines:
+                        l,t,w,h = tuple(map(int, line.bounding_box.split(',')))
+                        bbox = (l, t, l+w, t+h)
+                        line_text = ''
+                        for word in line.words:
+                            line_text += word.text + ' '
+                        clean_line = line_text.rstrip()
+                        result_bboxes[bbox] = clean_line
+                
+                self.results[img_name] = result_bboxes
+                
+                self.detail_graphic_bboxes[img_name] = []
                     
             print('Finished processing all images')
         self.page_nums = self.get_page_nums(pg_num_bbox)
         
+        
+        if cb!=None: cb(self)
+
     def get_text_in_bbox(self, filename, target_bbox):
         '''Returns text contained within a bounding box on an image
 
@@ -151,8 +157,8 @@ class PlanTextExtractor:
             contained_text_boxes (list[tuple(tuple(int), str)]): Text boxes and text found within the target bounding box
         '''
         target_left, target_top, target_right, target_bottom = target_bbox
-        contained_text_bboxes = []
         
+        contained_text_bboxes = []
         for text_bbox, text in self.results[filename].items():
             text_left, text_top, text_right, text_bottom = text_bbox
             
@@ -160,6 +166,9 @@ class PlanTextExtractor:
             top_contained = (target_top <= text_top <= target_bottom)
             right_contained = (target_left <= text_right <= target_right)
             bottom_contained = (target_top <= text_bottom <= target_bottom)
+
+            print(target_bbox, text_bbox, left_contained, top_contained, right_contained, bottom_contained)
+
             edges_contained = left_contained + top_contained + right_contained + bottom_contained
             
             if edges_contained == 4: # This could be changed if you just wanted text bboxes intersecting with the target
@@ -298,35 +307,53 @@ class PlanTextExtractor:
         return self.crop_bbox(self.page_nums[page_num], detail_bbox)
 
 
-
-
-
-
-
-
 app = Flask(__name__, static_url_path='/static/')
 api = Api(app)
 cors = CORS(app)
 
+
 pdfs = [
-    {"name": 'test_pdf', "pages": 20 }
+    'test_pdf'
 ]
 
-class ML(Resource):
-    def get(self, id=0):
-        return {"msg":"welcome to my Python API!"}, 200
+def setupAPI(extractor):
+    class ML(Resource):
+        def get(self, id=0):
+            return {"msg":"welcome to my Python API!"}, 200
 
-    def get(self, id=1):
-        # In the future this may return data for a specific pdf of many
-        return pdfs[0], 200
+        def get(self, id=1):
+            # In the future this may return data for a specific pdf of many
+            name=pdfs[0]
+            pdf_path="static/{name}".format(name=name)
+            images = [n for n in os.listdir(pdf_path) if n.endswith('.png')]
+            print(images)
+            return {"name":name,"images":images}, 200
+        
+        def post(self, id=2):
+            bb=request.json.get('bb')
+            path=request.json.get('path')
+            # TODO: send bbox to Extractor and return response!
+            target_bbox=[bb.get('bottom'),bb.get('left'),bb.get('top'),bb.get('right')]
+            texts=extractor.get_text_in_bbox(path, target_bbox)
+            return texts,200
+
+
+    api.add_resource(ML, "/", "/pdf-data", "/process-tag-bb")
     
-    def post(self, id=2):
-        print(request.json)
-        # TODO: send bbox to Extractor and return response!
-        return "Good"
-
-api.add_resource(ML, "/", "/pdf-data", "/process-tag-bb")
+    if __name__ == '__main__':
+        app.run()
 
 
-if __name__ == '__main__':
-    app.run(debug=True)
+project_name = 'test_pdf'
+plan_folder_path = 'static/' + project_name
+pg_num_bbox = (3645, 2376, 4050, 2700)
+
+def onFinishedExtraction(extractor):
+    print("Done!")
+    setupAPI(extractor)
+
+# Process all of the text in the plan
+extractor = PlanTextExtractor(plan_folder_path, pg_num_bbox, True, None, onFinishedExtraction)
+
+
+print("*** Reached end of program")
